@@ -1,0 +1,105 @@
+name: Build full-JDK OpenJDK-Mobile (Zero) for iOS
+
+# Produces a full multi-module iOS JDK (Zero interpreter, no JIT) for running the
+# lean Suwayomi server on-device. Pinned to a JDK-27 / boot-JDK-25 commit so the
+# GA Temurin 25 on the runner boots it cleanly (no bleeding-edge JDK 28).
+#
+# One `make static-libs-image` yields all modules' native static libs + the full
+# modules jimage. We package the full image (jlink trimming needs a host JDK 27 and
+# is a size optimization, not required for the gate). Runs on a GitHub macOS runner
+# (~100 GB free), so no local disk constraint.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+env:
+  CONF: ios-aarch64-zero-release
+  # JDK 27, DEFAULT_ACCEPTABLE_BOOT_VERSIONS="25 26 27" — boots with GA Temurin 25.
+  MOBILE_REF: d2c1907349afcbc40b2626060960511e2dca01d4
+  BOOT_JAVA: '25'
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 240
+    steps:
+      - name: Install toolchain
+        run: |
+          brew install autoconf make
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+
+      - name: Set up boot JDK ${{ env.BOOT_JAVA }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.BOOT_JAVA }}
+          distribution: temurin
+
+      - name: Fetch prebuilt iOS libffi
+        run: |
+          mkdir -p "$RUNNER_TEMP/support"
+          curl -sL -o ffi.zip \
+            https://github.com/openjdk-mobile/ios-tools/releases/download/libffi-build/libffi-ios.zip
+          unzip -q ffi.zip -d "$RUNNER_TEMP/support"
+
+      - name: Clone openjdk/mobile @ pinned commit
+        run: |
+          git clone https://github.com/openjdk/mobile.git mobile
+          cd mobile
+          git checkout "$MOBILE_REF"
+          curl -sL -o src/hotspot/os/bsd/symbol_keeper.cpp \
+            https://raw.githubusercontent.com/openjdk-mobile/ios-tools/main/openjdk-ext/src/hotspot/symbol_keeper.cpp
+
+      - name: Configure (iOS arm64, Zero)
+        run: |
+          cd mobile
+          SUPPORT="$RUNNER_TEMP/support"
+          bash configure \
+            --with-conf-name=${CONF} \
+            --disable-warnings-as-errors \
+            --openjdk-target=aarch64-macos-ios \
+            --with-sysroot="$(xcrun --sdk iphoneos --show-sdk-path)" \
+            --with-libffi-include="$(realpath "$SUPPORT/include/ffi")" \
+            --with-libffi-lib="$(realpath "$SUPPORT")" \
+            --with-cups-include="$(xcrun --sdk macosx --show-sdk-path)/usr/include"
+
+      - name: Build static-libs-image (all modules + native static libs)
+        run: |
+          cd mobile
+          make LOG=info CONF=${CONF} static-libs-image
+          echo "---- static libs ----"; ls -la build/${CONF}/images/static-libs/lib || true
+          echo "---- jdk image ----";  ls -la build/${CONF}/jdk/lib || true
+
+      - name: Generate nm-based exported-symbols list (clean keeper for the app link)
+        run: |
+          cd mobile
+          OUT="$GITHUB_WORKSPACE/ios-jdk-out"; mkdir -p "$OUT"
+          LIBDIR=build/${CONF}/images/static-libs/lib
+          : > "$OUT/exported_symbols_list.txt"
+          find "$LIBDIR" -name '*.a' -print0 | while IFS= read -r -d '' a; do
+            nm "$a" 2>/dev/null | grep -E ' T _(Java_|JNI_OnLoad)' | awk '{print $3}'
+          done | sort -u >> "$OUT/exported_symbols_list.txt"
+          echo "symbols kept: $(wc -l < "$OUT/exported_symbols_list.txt")"
+
+      - name: Package full JDK image + static libs + headers
+        run: |
+          cd mobile
+          OUT="$GITHUB_WORKSPACE/ios-jdk-out"
+          mkdir -p "$OUT/static-libs" "$OUT/runtime/lib"
+          cp build/${CONF}/images/static-libs/lib/*.a "$OUT/static-libs/" || true
+          # Full modules jimage (all modules — java.sql, java.naming, etc.)
+          cp build/${CONF}/jdk/lib/modules "$OUT/runtime/lib/modules"
+          cp -R build/${CONF}/jdk/conf "$OUT/runtime/conf" || true
+          cp -R build/${CONF}/jdk/include "$OUT/include" || true
+          "$JAVA_HOME/bin/jimage" list "$OUT/runtime/lib/modules" | grep -c Module: \
+            | xargs echo "modules in image:"
+          du -sh "$OUT"
+
+      - name: Upload iOS full-JDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-fulljdk-zero-jdk27
+          path: ios-jdk-out
+          retention-days: 30
