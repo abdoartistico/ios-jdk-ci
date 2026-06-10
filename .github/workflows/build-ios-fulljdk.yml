@@ -70,7 +70,27 @@ jobs:
           cd mobile
           make LOG=info CONF=${CONF} static-libs-image
           echo "---- static libs ----"; ls -la build/${CONF}/images/static-libs/lib || true
-          echo "---- jdk image ----";  ls -la build/${CONF}/jdk/lib || true
+
+      - name: Produce a lib/modules jimage with the build's OWN tools (signature matches)
+        run: |
+          cd mobile
+          MODS="java.base,java.sql,java.naming,java.management,java.prefs,java.security.jgss,jdk.unsupported,jdk.zipfs,jdk.crypto.ec"
+          # Try the standard image target first (uses the interim host jdk's jlink).
+          make CONF=${CONF} jdk-image 2>&1 | tail -5 || true
+          if [ -f build/${CONF}/images/jdk/lib/modules ]; then
+            echo "JIMAGE_FULL=build/${CONF}/images/jdk/lib/modules" >> "$GITHUB_ENV"
+            echo "got full jdk-image jimage"
+          fi
+          # Also jlink a trimmed 9-module image using the interim host jlink.
+          JL=$(find build/${CONF} -type f -name jlink -path '*bin*' 2>/dev/null \
+               | grep -viE 'images/jdk/bin' | head -1)
+          echo "interim jlink candidate: $JL"
+          if [ -n "$JL" ]; then
+            "$JL" --module-path build/${CONF}/jdk/modules --add-modules "$MODS" \
+              --output build/${CONF}/iosrt --no-header-files --no-man-pages --strip-debug 2>&1 | tail -5 || true
+            [ -f build/${CONF}/iosrt/lib/modules ] && echo "JIMAGE_TRIM=build/${CONF}/iosrt/lib/modules" >> "$GITHUB_ENV" && echo "got trimmed jimage"
+          fi
+          echo "---- jimage search ----"; find build/${CONF} -name modules -type f 2>/dev/null | head
 
       - name: Generate nm-based exported-symbols list (clean keeper for the app link)
         run: |
@@ -101,9 +121,13 @@ jobs:
           # static libs (all *.a from the static-libs image)
           find build/${CONF} -path '*static-libs*' -name '*.a' -exec cp {} "$OUT/static-libs/" \;
           echo "static libs: $(ls "$OUT/static-libs" | wc -l)"
+          mkdir -p "$OUT/runtime/lib"
+          # jimages produced by the build's own jlink (signature matches the iOS libjvm)
+          [ -n "$JIMAGE_TRIM" ] && [ -f "$JIMAGE_TRIM" ] && cp "$JIMAGE_TRIM" "$OUT/runtime/lib/modules-trim" && echo "packaged trimmed jimage"
+          [ -n "$JIMAGE_FULL" ] && [ -f "$JIMAGE_FULL" ] && cp "$JIMAGE_FULL" "$OUT/runtime/lib/modules-full" && echo "packaged full jimage"
           # modules: prefer a jimage if present, else the exploded module tree
           if [ -f build/${CONF}/jdk/lib/modules ]; then
-            mkdir -p "$OUT/runtime/lib"; cp build/${CONF}/jdk/lib/modules "$OUT/runtime/lib/modules"
+            cp build/${CONF}/jdk/lib/modules "$OUT/runtime/lib/modules"
             echo "packaged jimage ($("$JAVA_HOME/bin/jimage" list "$OUT/runtime/lib/modules" | grep -c Module:) modules)"
           elif [ -d build/${CONF}/jdk/modules ]; then
             cp -R build/${CONF}/jdk/modules "$OUT/modules-exploded"
