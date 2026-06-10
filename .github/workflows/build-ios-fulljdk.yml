@@ -71,26 +71,34 @@ jobs:
           make LOG=info CONF=${CONF} static-libs-image
           echo "---- static libs ----"; ls -la build/${CONF}/images/static-libs/lib || true
 
-      - name: Produce a lib/modules jimage with the build's OWN tools (signature matches)
+      - name: Build macOS host JDK (signature-matched jmod/jlink — the ios-tools recipe)
         run: |
           cd mobile
+          bash configure --with-conf-name=macos-aarch64 --with-boot-jdk="$JAVA_HOME" \
+            --disable-warnings-as-errors
+          make LOG=info CONF=macos-aarch64 jdk-image
+          ls -la build/macos-aarch64/images/jdk/bin/jmod build/macos-aarch64/images/jdk/bin/jlink
+
+      - name: Build the iOS jimage (jmod create --target-platform ios-aarch64 → jlink)
+        run: |
+          cd mobile
+          JMOD=build/macos-aarch64/images/jdk/bin/jmod
+          JLINK=build/macos-aarch64/images/jdk/bin/jlink
+          chmod +x "$JMOD" "$JLINK"
+          MODSRC=build/${CONF}/jdk/modules
+          mkdir -p jmods
+          # class-only jmod per module (the jimage is class data; native is the static libs)
+          for m in "$MODSRC"/*/; do n=$(basename "$m"); \
+            "$JMOD" create --class-path "$m" --target-platform ios-aarch64 "jmods/$n.jmod" 2>/dev/null || echo "skip $n"; done
+          echo "jmods created: $(ls jmods | wc -l)"
           MODS="java.base,java.sql,java.naming,java.management,java.prefs,java.security.jgss,jdk.unsupported,jdk.zipfs,jdk.crypto.ec"
-          # Try the standard image target first (uses the interim host jdk's jlink).
-          make CONF=${CONF} jdk-image 2>&1 | tail -5 || true
-          if [ -f build/${CONF}/images/jdk/lib/modules ]; then
-            echo "JIMAGE_FULL=build/${CONF}/images/jdk/lib/modules" >> "$GITHUB_ENV"
-            echo "got full jdk-image jimage"
-          fi
-          # Also jlink a trimmed 9-module image using the interim host jlink.
-          JL=$(find build/${CONF} -type f -name jlink -path '*bin*' 2>/dev/null \
-               | grep -viE 'images/jdk/bin' | head -1)
-          echo "interim jlink candidate: $JL"
-          if [ -n "$JL" ]; then
-            "$JL" --module-path build/${CONF}/jdk/modules --add-modules "$MODS" \
-              --output build/${CONF}/iosrt --no-header-files --no-man-pages --strip-debug 2>&1 | tail -5 || true
-            [ -f build/${CONF}/iosrt/lib/modules ] && echo "JIMAGE_TRIM=build/${CONF}/iosrt/lib/modules" >> "$GITHUB_ENV" && echo "got trimmed jimage"
-          fi
-          echo "---- jimage search ----"; find build/${CONF} -name modules -type f 2>/dev/null | head
+          "$JLINK" --module-path jmods --add-modules "$MODS" \
+            --output iosrt --no-header-files --no-man-pages --strip-debug 2>&1 | tail -8
+          ls -la iosrt/lib/modules && echo "JIMAGE_TRIM=$(pwd)/iosrt/lib/modules" >> "$GITHUB_ENV"
+          # also a full image (all modules) as a fallback
+          "$JLINK" --module-path jmods --add-modules ALL-MODULE-PATH \
+            --output iosrt-full --no-header-files --no-man-pages --strip-debug 2>&1 | tail -3 || true
+          [ -f iosrt-full/lib/modules ] && echo "JIMAGE_FULL=$(pwd)/iosrt-full/lib/modules" >> "$GITHUB_ENV" || true
 
       - name: Generate nm-based exported-symbols list (clean keeper for the app link)
         run: |
