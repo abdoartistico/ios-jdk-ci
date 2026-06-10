@@ -83,18 +83,38 @@ jobs:
           done | sort -u >> "$OUT/exported_symbols_list.txt"
           echo "symbols kept: $(wc -l < "$OUT/exported_symbols_list.txt")"
 
-      - name: Package full JDK image + static libs + headers
+      - name: Diagnose build output layout
+        run: |
+          cd mobile
+          echo "==== build/${CONF} top ===="; ls -la build/${CONF} || true
+          echo "==== jdk/ ===="; ls -la build/${CONF}/jdk || true
+          echo "==== jdk/lib (jimage?) ===="; ls -la build/${CONF}/jdk/lib 2>/dev/null | head || true
+          echo "==== jdk/modules (exploded?) ===="; ls build/${CONF}/jdk/modules 2>/dev/null | head -30 || true
+          echo "==== static-libs ===="; find build/${CONF} -path '*static-libs*' -name '*.a' 2>/dev/null | head
+          echo "==== any jimage anywhere ===="; find build/${CONF} -name modules -type f 2>/dev/null | head
+
+      - name: Package full JDK (modules + static libs + headers) — path-robust
         run: |
           cd mobile
           OUT="$GITHUB_WORKSPACE/ios-jdk-out"
-          mkdir -p "$OUT/static-libs" "$OUT/runtime/lib"
-          cp build/${CONF}/images/static-libs/lib/*.a "$OUT/static-libs/" || true
-          # Full modules jimage (all modules — java.sql, java.naming, etc.)
-          cp build/${CONF}/jdk/lib/modules "$OUT/runtime/lib/modules"
-          cp -R build/${CONF}/jdk/conf "$OUT/runtime/conf" || true
-          cp -R build/${CONF}/jdk/include "$OUT/include" || true
-          "$JAVA_HOME/bin/jimage" list "$OUT/runtime/lib/modules" | grep -c Module: \
-            | xargs echo "modules in image:"
+          mkdir -p "$OUT/static-libs"
+          # static libs (all *.a from the static-libs image)
+          find build/${CONF} -path '*static-libs*' -name '*.a' -exec cp {} "$OUT/static-libs/" \;
+          echo "static libs: $(ls "$OUT/static-libs" | wc -l)"
+          # modules: prefer a jimage if present, else the exploded module tree
+          if [ -f build/${CONF}/jdk/lib/modules ]; then
+            mkdir -p "$OUT/runtime/lib"; cp build/${CONF}/jdk/lib/modules "$OUT/runtime/lib/modules"
+            echo "packaged jimage ($("$JAVA_HOME/bin/jimage" list "$OUT/runtime/lib/modules" | grep -c Module:) modules)"
+          elif [ -d build/${CONF}/jdk/modules ]; then
+            cp -R build/${CONF}/jdk/modules "$OUT/modules-exploded"
+            echo "packaged exploded modules: $(ls "$OUT/modules-exploded" | wc -l) modules"
+            ls "$OUT/modules-exploded" | tr '\n' ' '
+          else
+            echo "ERROR: no modules output found"; find build/${CONF} -name 'modules*' | head; exit 1
+          fi
+          # conf (java.security etc.) + headers
+          for d in build/${CONF}/jdk/conf build/${CONF}/images/jdk/conf; do [ -d "$d" ] && cp -R "$d" "$OUT/conf" && break; done || true
+          for d in build/${CONF}/jdk/include build/${CONF}/support/modules_include; do [ -d "$d" ] && cp -R "$d" "$OUT/include" && break; done || true
           du -sh "$OUT"
 
       - name: Upload iOS full-JDK artifact
