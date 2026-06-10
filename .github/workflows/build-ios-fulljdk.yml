@@ -74,6 +74,9 @@ jobs:
       - name: Build macOS host JDK (signature-matched jmod/jlink — the ios-tools recipe)
         run: |
           cd mobile
+          # symbol_keeper.cpp is for the static iOS build only (refs JIMAGE_*/loadfunctions
+          # that don't exist in a normal dynamic macOS build). Remove it for the host build.
+          rm -f src/hotspot/os/bsd/symbol_keeper.cpp
           bash configure --with-conf-name=macos-aarch64 --with-boot-jdk="$JAVA_HOME" \
             --disable-warnings-as-errors
           make LOG=info CONF=macos-aarch64 jdk-image
