@@ -25,6 +25,9 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 240
     steps:
+      - name: Checkout CI repo (for patches/)
+        uses: actions/checkout@v4
+
       - name: Install toolchain
         run: |
           brew install autoconf make
@@ -51,6 +54,11 @@ jobs:
           git checkout "$MOBILE_REF"
           curl -sL -o src/hotspot/os/bsd/symbol_keeper.cpp \
             https://raw.githubusercontent.com/openjdk-mobile/ios-tools/main/openjdk-ext/src/hotspot/symbol_keeper.cpp
+          # Restore the iOS OperatingSystem enum patch that a jdk:master auto-merge
+          # clobbered at this commit. Without IOS in the enum, (a) the runtime crashes
+          # on valueOf("IOS") and (b) jlink can't tag an ios-aarch64 jimage.
+          git apply "$GITHUB_WORKSPACE/patches/0001-restore-ios-operatingsystem.patch"
+          echo "applied IOS patch:"; git diff --stat
 
       - name: Configure (iOS arm64, Zero)
         run: |
@@ -94,10 +102,13 @@ jobs:
           VER=$(grep -oE 'JAVA_VERSION="[^"]+"' build/macos-aarch64/images/jdk/release | sed 's/.*="//;s/"//' | grep -oE '^[0-9]+(\.[0-9]+)*')
           [ -z "$VER" ] && VER=26
           echo "stamping module version: $VER"
-          # class-only jmod per module (the jimage is class data; native is the static libs)
+          # class-only jmod per module (the jimage is class data; native is the static libs).
+          # --target-platform ios-aarch64 stamps ModuleTarget so jlink emits an ios-aarch64
+          # jimage matching the iOS libjvm's runtime platform (else "Failed setting boot class path").
           for m in "$MODSRC"/*/; do n=$(basename "$m"); \
-            "$JMOD" create --class-path "$m" --module-version "$VER" "jmods/$n.jmod" 2>/dev/null || echo "skip $n"; done
+            "$JMOD" create --class-path "$m" --module-version "$VER" --target-platform ios-aarch64 "jmods/$n.jmod" 2>/dev/null || echo "skip $n"; done
           echo "jmods created: $(ls jmods | wc -l)"
+          echo "java.base ModuleTarget:"; "$JMOD" describe jmods/java.base.jmod 2>/dev/null | grep -i platform || echo "(none)"
           MODS="java.base,java.sql,java.naming,java.management,java.prefs,java.security.jgss,jdk.unsupported,jdk.zipfs,jdk.crypto.ec"
           "$JLINK" --module-path jmods --add-modules "$MODS" \
             --output iosrt --no-header-files --no-man-pages --strip-debug 2>&1 | tail -8
