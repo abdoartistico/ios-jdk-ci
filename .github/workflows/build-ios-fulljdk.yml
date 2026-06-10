@@ -96,7 +96,7 @@ jobs:
           echo "stamping module version: $VER"
           # class-only jmod per module (the jimage is class data; native is the static libs)
           for m in "$MODSRC"/*/; do n=$(basename "$m"); \
-            "$JMOD" create --class-path "$m" --module-version "$VER" --target-platform ios-aarch64 "jmods/$n.jmod" 2>/dev/null || echo "skip $n"; done
+            "$JMOD" create --class-path "$m" --module-version "$VER" "jmods/$n.jmod" 2>/dev/null || echo "skip $n"; done
           echo "jmods created: $(ls jmods | wc -l)"
           MODS="java.base,java.sql,java.naming,java.management,java.prefs,java.security.jgss,jdk.unsupported,jdk.zipfs,jdk.crypto.ec"
           "$JLINK" --module-path jmods --add-modules "$MODS" \
@@ -155,6 +155,13 @@ jobs:
           for d in build/${CONF}/jdk/conf build/${CONF}/images/jdk/conf; do [ -d "$d" ] && cp -R "$d" "$OUT/conf" && break; done || true
           for d in build/${CONF}/jdk/include build/${CONF}/support/modules_include; do [ -d "$d" ] && cp -R "$d" "$OUT/include" && break; done || true
           du -sh "$OUT"
+
+      - name: Upload macOS host JDK (for local jmod/jlink iteration)
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-host-jdk
+          path: mobile/build/macos-aarch64/images/jdk
+          retention-days: 7
 
       - name: Upload iOS full-JDK artifact
         uses: actions/upload-artifact@v4
