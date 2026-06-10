@@ -90,9 +90,13 @@ jobs:
           chmod +x "$JMOD" "$JLINK"
           MODSRC=build/${CONF}/jdk/modules
           mkdir -p jmods
+          # static-libs-image doesn't stamp a module version → jlink rejects it. Stamp one.
+          VER=$(grep -oE 'JAVA_VERSION="[^"]+"' build/macos-aarch64/images/jdk/release | sed 's/.*="//;s/"//' | grep -oE '^[0-9]+(\.[0-9]+)*')
+          [ -z "$VER" ] && VER=26
+          echo "stamping module version: $VER"
           # class-only jmod per module (the jimage is class data; native is the static libs)
           for m in "$MODSRC"/*/; do n=$(basename "$m"); \
-            "$JMOD" create --class-path "$m" --target-platform ios-aarch64 "jmods/$n.jmod" 2>/dev/null || echo "skip $n"; done
+            "$JMOD" create --class-path "$m" --module-version "$VER" --target-platform ios-aarch64 "jmods/$n.jmod" 2>/dev/null || echo "skip $n"; done
           echo "jmods created: $(ls jmods | wc -l)"
           MODS="java.base,java.sql,java.naming,java.management,java.prefs,java.security.jgss,jdk.unsupported,jdk.zipfs,jdk.crypto.ec"
           "$JLINK" --module-path jmods --add-modules "$MODS" \
