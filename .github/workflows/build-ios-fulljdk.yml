@@ -17,8 +17,8 @@ on:
 env:
   CONF: ios-aarch64-zero-release
   # JDK 27, DEFAULT_ACCEPTABLE_BOOT_VERSIONS="25 26 27" — boots with GA Temurin 25.
-  MOBILE_REF: d2c1907349afcbc40b2626060960511e2dca01d4
-  BOOT_JAVA: '25'
+  MOBILE_REF: 6360787b62e0f4eef78a0a840ebd81cbb7f87a9e
+  BOOT_JAVA: '26'
 
 jobs:
   build:
